@@ -1,0 +1,31 @@
+# Pinned to versions verified together on macOS / Python 3.11.
+
+# UI
+streamlit==1.63.0
+
+# LangChain (maintained split packages; langchain-community is not used)
+langchain==1.4.0
+langchain-text-splitters==1.1.2
+langchain-huggingface==1.2.2
+langchain-chroma==1.1.0
+
+# Vector store, embeddings, PDF parsing, keyword retrieval
+chromadb==1.5.9
+sentence-transformers==6.0.1
+pypdf==6.18.1
+rank-bm25==0.2.2
+
+# Config
+python-dotenv==1.2.3
+
+# HTTP client for the Sarvam speech-to-text API (already installed with streamlit)
+requests==2.34.2
+
+# FastAPI backend
+fastapi==0.141.1
+uvicorn==0.53.0
+python-multipart==0.0.32
+httpx==0.28.1
+
+# Testing
+pytest==9.1.1
