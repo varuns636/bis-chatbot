@@ -35,7 +35,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 
 import config
-from src.ingestion import FileReport, IngestionResult, ingest_pdfs
+from src.ingestion import IS_NUMBER_PATTERN, FileReport, IngestionResult, ingest_pdfs
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,6 @@ BATCH_SIZE = 500
 STOPWORDS = frozenset("a an and are as at be by for from in is it of on or that the this to with".split())
 # A number with optional dotted parts ("5.1.2", "0.5"), or a run of letters.
 TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)*|[^\W\d_]+")
-# An IS number in a query, title or file name: "IS 14543", "IS:7098", "is.14543.2004.pdf".
-IS_NUMBER_PATTERN = re.compile(r"\bIS\s*[:.\-]?\s*(\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -64,6 +62,8 @@ class SearchResult:
     title: str
     doc_id: str
     chunk_index: int
+    doc_type: str  # "standard", "act", "product_manual", "press_release", "summary" or "document"
+    standards: list[str]  # IS numbers this document is about, for example ["302"]
     score: float  # the ranking score: raw score for single-method search, RRF score for hybrid
     methods: list[str]  # "vector", "bm25" or both
     vector_score: float | None = None  # cosine similarity; higher is closer
@@ -80,6 +80,18 @@ class BM25Index:
 
     chunks: list[Document]
     bm25: BM25Okapi | None  # None when there is nothing to index
+
+
+def chunk_standards(metadata: dict) -> list[str]:
+    """IS numbers a chunk's document is about.
+
+    Ingestion writes them to the "standards" metadata field as a comma-separated string.
+    Chunks from an index built before that field existed fall back to the title and file name.
+    """
+    stored = metadata.get("standards")
+    if stored is not None:
+        return [number for number in str(stored).split(",") if number]
+    return sorted(set(IS_NUMBER_PATTERN.findall(f"{metadata.get('title', '')} {metadata.get('source', '')}")), key=int)
 
 
 def make_chunk_id(doc_id: str, page: int, chunk_index: int) -> str:
@@ -147,25 +159,26 @@ def load_indexed_chunks(store: Chroma) -> list[Document]:
 def build_bm25_index(chunks: list[Document]) -> BM25Index:
     """Build a BM25 index over each chunk's title and text.
 
-    The title carries the IS number, so "IS 7098" also matches chunks whose text does not repeat it.
+    The title and the document's IS numbers are indexed with the text, so "IS 7098" also matches
+    chunks whose text does not repeat the number, and "IS 302" reaches the IS 302-1 product manual.
     """
-    corpus = [tokenize(f"{chunk.metadata.get('title', '')}\n{chunk.page_content}") for chunk in chunks]
+    corpus = [
+        tokenize(f"{chunk.metadata.get('title', '')} {' '.join(chunk_standards(chunk.metadata))}\n{chunk.page_content}")
+        for chunk in chunks
+    ]
     return BM25Index(chunks=list(chunks), bm25=BM25Okapi(corpus) if any(corpus) else None)
 
 
 def named_standard_doc_ids(query: str, chunks: list[Document]) -> set[str]:
-    """Return the doc_ids of indexed standards whose IS number appears in the query.
+    """Return the doc_ids of indexed documents about an IS number that the query names.
 
+    This covers every document type, so "IS 302" also selects the IS 302-1 product manual.
     Returns an empty set when the query names no IS number, or only IS numbers that are not indexed.
     """
     numbers = set(IS_NUMBER_PATTERN.findall(query))
     if not numbers:
         return set()
-    return {
-        chunk.metadata["doc_id"]
-        for chunk in chunks
-        if numbers & set(IS_NUMBER_PATTERN.findall(f"{chunk.metadata['title']} {chunk.metadata['source']}"))
-    }
+    return {chunk.metadata["doc_id"] for chunk in chunks if numbers & set(chunk_standards(chunk.metadata))}
 
 
 def _to_result(chunk: Document, score: float, method: str) -> SearchResult:
@@ -178,6 +191,8 @@ def _to_result(chunk: Document, score: float, method: str) -> SearchResult:
         title=meta["title"],
         doc_id=meta["doc_id"],
         chunk_index=meta["chunk_index"],
+        doc_type=meta.get("doc_type", "document"),
+        standards=chunk_standards(meta),
         score=score,
         methods=[method],
         vector_score=score if method == "vector" else None,

@@ -30,6 +30,54 @@ SCANNED_PAGE_RATIO = 0.5
 # It is the same on every file, so it adds retrieval noise and no facts.
 BOILERPLATE_PAGE_PREFIXES = ("Disclosure to Promote the Right To Information",)
 
+# --- Title, IS numbers and document type, read from the first usable page ---
+# Many BIS PDFs carry no usable metadata title: press notes, product manuals and summary
+# sheets. For those, the title is read from the heading at the top of the first usable page.
+
+# Lines of the BIS letterhead and the press-note header. They open many documents and name none.
+HEADING_NOISE_PATTERN = re.compile(
+    r"^(bureau of indian standards|manak bhawan\b.*|new delhi\b.*|for immediate release"
+    r"|press[\s_-]?(note|release)\b.*|government of india|[\d\s,./-]+)$",
+    re.IGNORECASE,
+)
+# A line with any Devanagari character is the Hindi half of a bilingual document.
+DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
+# Lines read from the top of the page: the title comes from them, and so do the document's IS numbers.
+HEADING_LINES = 8
+# A title stops once it is this long. Long enough for a multi-line title, short enough to drop body text.
+HEADING_CHARS = 110
+MIN_HEADING_LINE_CHARS = 8
+
+# Document types, used for labels in the UI and in refusals. "standard" is an Indian Standard
+# itself. The other types are BIS documents *about* standards and services.
+DOC_TYPE_RULES = (
+    ("standard", re.compile(r"^IS\s*[:.\-]?\s*\d+", re.IGNORECASE)),
+    ("product_manual", re.compile(r"\bproduct manual\b|\bPM[/_]", re.IGNORECASE)),
+    # "_" is a word character, so the match ends on a lookahead: "Press_Release_Milestones.pdf".
+    ("press_release", re.compile(r"\bpress[\s_-]?(note|release)s?(?![A-Za-z])|for immediate release", re.IGNORECASE)),
+    ("summary", re.compile(r"\bsummary of indian standards?\b", re.IGNORECASE)),
+    ("act", re.compile(r"\bact,?\s*\d{4}\b", re.IGNORECASE)),
+)
+DOC_TYPE_LABELS = {
+    "standard": "Indian Standard",
+    "act": "Act",
+    "product_manual": "Product manual",
+    "press_release": "Press release",
+    "summary": "Standard summary",
+    "document": "BIS document",
+}
+DOC_TYPE_PLURALS = {
+    "standard": "Indian Standards",
+    "act": "Acts",
+    "product_manual": "Product manuals",
+    "press_release": "Press releases",
+    "summary": "Standard summaries",
+    "document": "BIS documents",
+}
+# An IS number in a title, heading or file name: "IS 14543", "IS:7098", "PM/IS 302-1", "is.14543.2004.pdf".
+# The lookahead rejects a thousands separator, so "1,43,497 jewellers" is not read as "IS 1".
+IS_NUMBER_PATTERN = re.compile(r"\bIS\s*[:.\-]?\s*(\d+)(?!,\d)", re.IGNORECASE)
+
 
 @dataclass
 class FileReport:
@@ -85,8 +133,8 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def _document_title(reader: PdfReader, path: Path) -> str:
-    """Title from the PDF metadata, or the file name when the PDF has no usable title.
+def _metadata_title(reader: PdfReader) -> str:
+    """Title from the PDF metadata, or "" when the PDF has no usable one.
 
     Metadata titles that are just a file name (for example "5296GI.p65", left by the
     authoring tool in the BIS Act PDF) are ignored.
@@ -96,9 +144,62 @@ def _document_title(reader: PdfReader, path: Path) -> str:
     except Exception:  # malformed metadata is common in scanned PDFs
         title = None
     title = str(title).strip() if title else ""
-    if not title or re.fullmatch(r"[\w .-]+\.\w{2,4}", title):
-        return path.stem
-    return title
+    return "" if re.fullmatch(r"[\w .-]+\.\w{2,4}", title) else title
+
+
+def heading_lines(text: str, limit: int = HEADING_LINES) -> list[str]:
+    """The first `limit` lines of real heading text at the top of a page.
+
+    Blank lines, Devanagari lines of a bilingual document, letterhead and press-note header
+    lines, and lines too short to be a title are all dropped.
+    """
+    lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            if lines:  # a blank line after the heading ends it
+                break
+            continue
+        if len(line) < MIN_HEADING_LINE_CHARS or DEVANAGARI_PATTERN.search(line):
+            continue
+        if HEADING_NOISE_PATTERN.fullmatch(line) or not re.search(r"[A-Za-z]", line):
+            continue
+        lines.append(line)
+        if len(lines) == limit:
+            break
+    return lines
+
+
+def content_title(text: str, fallback: str) -> str:
+    """Title read from the heading at the top of a page. `fallback` is used when there is none.
+
+    Heading lines are joined until the title reaches HEADING_CHARS, which keeps a title that
+    runs over several lines ("PRODUCT MANUAL FOR / SAFETY OF ...") and stops before the body text.
+    """
+    title = ""
+    for line in heading_lines(text):
+        title = f"{title} {line}".strip()
+        # A line that closes a sentence or a bracket ends the title; body text follows it.
+        if len(title) >= HEADING_CHARS or line.endswith((".", "]")):
+            break
+    return title.rstrip(" ,-:;") or fallback
+
+
+def document_standards(title: str, file_name: str, heading: str = "") -> list[str]:
+    """IS numbers this document is about, from its title, file name and page heading.
+
+    Only the heading is read, never the body, so a product manual that mentions IS 1293 for its
+    plugs is not treated as a copy of IS 1293. The result is sorted, without repeats.
+    """
+    return sorted({n for text in (title, file_name, heading) for n in IS_NUMBER_PATTERN.findall(text)}, key=int)
+
+
+def classify_document(title: str, file_name: str, heading: str = "") -> str:
+    """The kind of BIS document this is: see DOC_TYPE_RULES. Falls back to "document"."""
+    for doc_type, pattern in DOC_TYPE_RULES:
+        if pattern.search(title) or pattern.search(file_name) or pattern.search(heading):
+            return doc_type
+    return "document"
 
 
 def extract_pdf_pages(path: Path, doc_id: str | None = None) -> list[Document]:
@@ -111,28 +212,41 @@ def extract_pdf_pages(path: Path, doc_id: str | None = None) -> list[Document]:
         raise ValueError("PDF is encrypted and needs a password")
 
     doc_id = doc_id or file_sha256(path)[:16]
-    title = _document_title(reader, path)
-    pages = []
+    texts = []
     for number, page in enumerate(reader.pages, start=1):
         try:
-            text = clean_text(page.extract_text() or "")
+            texts.append(clean_text(page.extract_text() or ""))
         except Exception as exc:  # one unreadable page must not lose the whole file
             logger.warning("%s page %d: text extraction failed (%s)", path.name, number, exc)
-            text = ""
-        pages.append(
-            Document(
-                page_content=text,
-                metadata={
-                    "source": path.name,
-                    "source_path": str(path.resolve()),
-                    "page": number,
-                    "title": title,
-                    "page_char_count": len(text),
-                    "doc_id": doc_id,
-                },
-            )
+            texts.append("")
+
+    # The first page that is neither blank nor a stock cover page carries the heading.
+    first_text = next(
+        (t for t in texts if len(t) >= MIN_PAGE_CHARS and not t.startswith(BOILERPLATE_PAGE_PREFIXES)), ""
+    )
+    heading = "\n".join(heading_lines(first_text))
+    title = _metadata_title(reader) or content_title(first_text, path.stem)
+    standards = document_standards(title, path.name, heading)
+    doc_type = classify_document(title, path.name, heading)
+
+    return [
+        Document(
+            page_content=text,
+            metadata={
+                "source": path.name,
+                "source_path": str(path.resolve()),
+                "page": number,
+                "title": title,
+                "page_char_count": len(text),
+                "doc_id": doc_id,
+                # Chroma metadata values must be scalars, so the IS numbers are stored as
+                # a comma-separated string. Use src.retrieval.chunk_standards() to read it back.
+                "standards": ",".join(standards),
+                "doc_type": doc_type,
+            },
         )
-    return pages
+        for number, text in enumerate(texts, start=1)
+    ]
 
 
 def is_blank_page(page: Document) -> bool:
@@ -243,6 +357,16 @@ def main() -> None:
     print(f"PDFs discovered: {len(result.reports)}")
     print(f"Pages extracted: {sum(r.pages_total for r in result.reports)} ({sum(r.pages_used for r in result.reports)} used)")
     print(f"Chunks created:  {len(result.chunks)}")
+    documents = {}
+    for chunk in result.chunks:
+        meta = chunk.metadata
+        documents[meta["doc_id"]] = (DOC_TYPE_LABELS[meta["doc_type"]], meta["standards"], meta["title"])
+    if documents:
+        print("\nDocuments:")
+        for label, standards, title in sorted(documents.values()):
+            covers = f" (covers IS {', IS '.join(standards.split(','))})" if standards else ""
+            print(f"  [{label}]{covers} {title}")
+
     if result.chunks:
         sample = result.chunks[0]
         print(f"\nSample chunk metadata: {sample.metadata}")

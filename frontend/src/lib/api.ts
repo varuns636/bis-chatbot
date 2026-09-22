@@ -9,13 +9,32 @@ export type Language = 'english' | 'kannada' | 'hindi'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
 
+/** The kind of BIS document a passage came from (doc_type in src/ingestion.py). */
+export type DocType = 'standard' | 'act' | 'product_manual' | 'press_release' | 'summary' | 'document'
+
 /** A citation that the backend verified against the retrieved evidence. */
 export interface Citation {
   source: string
   page: number
+  /** Short name of the document, e.g. "IS 14543 (2004)" or "Product manual for IS 302". */
   standard: string
   title: string
+  doc_type: DocType
   preview: string
+}
+
+/** One document in the knowledge base (IndexedDocumentInfo in src/api.py). */
+export interface IndexedDocument {
+  source: string
+  title: string
+  doc_type: DocType
+  /** Human-readable type, e.g. "Product manual". */
+  type_label: string
+  /** Short name used in lists and citations. */
+  label: string
+  /** IS numbers this document is about, e.g. ["302"]. */
+  standards: string[]
+  pages: number
 }
 
 /** POST /api/chat response (ChatResponse in src/api.py). */
@@ -51,7 +70,7 @@ export interface StatusResponse {
   llm: { provider: string; model: string; available: boolean; error: string | null }
   stt: { provider: string; model: string; configured: boolean }
   translation: { provider: string; model: string; configured: boolean }
-  index: { chunks: number; documents: string[]; unavailable_files: Record<string, string> }
+  index: { chunks: number; documents: IndexedDocument[]; unavailable_files: Record<string, string> }
   supported_languages: Record<Language, string>
 }
 

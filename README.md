@@ -40,6 +40,14 @@ python -m src.retrieval --rebuild
 
 This reads every PDF in `data/raw/`, splits the text into chunks and indexes them. Each chunk keeps its file name, path, page number and title for citations. Corrupted, duplicate and scanned PDFs are skipped with a reason, and the run continues. Skipped files are listed in `data/chroma/ingestion_report.json`, and the chatbot tells users that those files were not searched.
 
+The knowledge base holds more than the standards themselves. Ingestion also reads, from the heading at the top of each PDF:
+
+- **the title**, when the PDF metadata has none. Press notes, product manuals and summary sheets usually do not.
+- **the IS numbers the document is about**, so "IS 302" finds the IS 302-1 product manual and "IS 1417" finds the IS 1417 summary sheet. Only the heading is read, never the body, so a product manual that names IS 1293 for its plugs is not treated as a copy of IS 1293.
+- **the document type**: Indian Standard, Act, product manual, press release, standard summary or plain BIS document.
+
+The type is shown next to every citation and in the knowledge-base panel. When a standard is covered only by documents *about* it (IS 302-1, whose own PDF is scanned), the assistant is told to answer from those and to say the answer does not come from the standard itself.
+
 Scanned (image-only) pages have no text layer, so they are skipped. OCR is not supported yet.
 
 Run `--rebuild` after you add, change or remove PDFs, then restart the app. The first run downloads the embedding model (about 90 MB).

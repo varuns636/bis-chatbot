@@ -3,7 +3,16 @@
 import shutil
 from pathlib import Path
 
-from src.ingestion import discover_pdf_files, extract_pdf_pages, ingest_pdfs, split_documents
+from src.ingestion import (
+    classify_document,
+    content_title,
+    discover_pdf_files,
+    document_standards,
+    extract_pdf_pages,
+    heading_lines,
+    ingest_pdfs,
+    split_documents,
+)
 
 LINE = "Packaged drinking water shall comply with the requirements of this standard."
 
@@ -98,10 +107,72 @@ def test_title_falls_back_to_file_name(tmp_path):
     assert extract_pdf_pages(pdf)[0].metadata["title"] == "is.456"
 
 
-def test_title_that_is_a_file_name_falls_back_to_file_name(tmp_path):
+def test_title_that_is_a_file_name_is_read_from_the_page(tmp_path):
     pdf = make_pdf(tmp_path / "BIS-Act-2016.pdf", ["The Bureau of Indian Standards Act, 2016."], title="5296GI.p65")
 
-    assert extract_pdf_pages(pdf)[0].metadata["title"] == "BIS-Act-2016"
+    page = extract_pdf_pages(pdf)[0]
+
+    assert page.metadata["title"] == "The Bureau of Indian Standards Act, 2016."
+    assert page.metadata["doc_type"] == "act"
+
+
+# The heading rules are tested on page text: make_pdf's generator cannot write blank lines
+# or Devanagari, and both matter here.
+PRODUCT_MANUAL_PAGE = (
+    "BUREAU OF INDIAN STANDARDS\n"
+    "Manak Bhawan, 9, Bahadur Shah Zafar Marg\n"
+    "\u0909\u0924\u094d\u092a\u093e\u0926 \u092e\u0948\u0928\u094d\u092f\u0941\u0905\u0932\n"
+    "PRODUCT MANUAL FOR\n"
+    "SAFETY OF HOUSEHOLD AND SIMILAR ELECTRICAL APPLIANCES\n"
+    "ACCORDING TO IS 302-1 : 2008\n"
+    "\n"
+    "Plugs shall be as per IS 1293 and cables as per IS 694, tested by the licensee."
+)
+PRESS_RELEASE_PAGE = (
+    "BUREAU OF INDIAN STANDARDS\n"
+    "FOR IMMEDIATE RELEASE\n"
+    "Press Note: PRD/Press Note/12/2022-23 31-Aug-2022\n"
+    "\n"
+    "Milestones in Hallmark Scheme\n"
+    "\n"
+    "Gold is too soft to withstand wear and tear, so it is always alloyed with another metal."
+)
+
+
+def test_heading_skips_the_letterhead_and_the_hindi_half():
+    assert heading_lines(PRODUCT_MANUAL_PAGE) == [
+        "PRODUCT MANUAL FOR",
+        "SAFETY OF HOUSEHOLD AND SIMILAR ELECTRICAL APPLIANCES",
+        "ACCORDING TO IS 302-1 : 2008",
+    ]
+
+
+def test_heading_stops_at_the_blank_line_before_the_body():
+    assert heading_lines(PRESS_RELEASE_PAGE) == ["Milestones in Hallmark Scheme"]
+    assert content_title(PRESS_RELEASE_PAGE, "fallback") == "Milestones in Hallmark Scheme"
+
+
+def test_content_title_joins_a_title_that_runs_over_several_lines():
+    assert content_title(PRODUCT_MANUAL_PAGE, "fallback") == (
+        "PRODUCT MANUAL FOR SAFETY OF HOUSEHOLD AND SIMILAR ELECTRICAL APPLIANCES ACCORDING TO IS 302-1 : 2008"
+    )
+
+
+def test_standards_come_from_the_heading_not_the_body():
+    """A product manual that names IS 1293 for its plugs is not a copy of IS 1293."""
+    heading = "\n".join(heading_lines(PRODUCT_MANUAL_PAGE))
+
+    assert document_standards("PRODUCT MANUAL FOR ...", "PM_302-1.pdf", heading) == ["302"]
+    assert document_standards("IS 14543 (2004): Packaged Drinking Water", "is.14543.2004.pdf") == ["14543"]
+
+
+def test_classify_document_reads_the_type_from_title_file_name_or_heading():
+    assert classify_document("IS 14543 (2004): Packaged Drinking Water", "is.14543.2004.pdf") == "standard"
+    assert classify_document("PRODUCT MANUAL FOR ...", "PM_302-1.pdf") == "product_manual"
+    assert classify_document("Milestones in Hallmark Scheme", "Press_Release_Hallmark.pdf") == "press_release"
+    assert classify_document("Summary of Indian Standards IS 1417:2016", "tbl5.pdf") == "summary"
+    assert classify_document("The Bureau of Indian Standards Act, 2016", "BIS-Act-2016.pdf") == "act"
+    assert classify_document("Notes on testing", "notes.pdf") == "document"
 
 
 def test_split_documents_preserves_page_metadata(tmp_path):

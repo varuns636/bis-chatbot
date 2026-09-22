@@ -38,17 +38,19 @@ from pydantic import BaseModel, Field, field_validator
 
 import config
 from src.assistant import (
+    IndexedDocument,
     check_citations,
     check_evidence,
     generate_answer,
-    indexed_standards,
-    standard_label,
+    indexed_documents,
+    indexed_numbers,
+    result_label,
     unsupported_standard_numbers,
 )
 from src.languages import SUPPORTED_LANGUAGES, Language, needs_translation, to_ascii_digits
 from src.llm import LLMProvider, LLMUnavailableError, get_llm
 from src.retrieval import BM25Index, SearchResult, build_bm25_index, load_indexed_chunks, load_unavailable_files, open_vector_store
-from src.stt import STTError, Transcript, indexed_is_numbers, transcribe
+from src.stt import STTError, Transcript, transcribe
 from src.translation import TranslationProvider, get_translator, localize_answer, question_to_english
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,8 @@ class SearchIndex:
     store: Chroma
     bm25: BM25Index
     unavailable_files: dict[str, str]
-    titles: list[str]
+    documents: list[IndexedDocument]
+    numbers: set[str]  # every IS number the knowledge base covers; used to repair transcripts
 
 
 @lru_cache(maxsize=1)
@@ -67,7 +70,13 @@ def get_search_index() -> SearchIndex:
     """Load Chroma and BM25 once per process. Restart the API after rebuilding the index."""
     store = open_vector_store(config.CHROMA_DIR, config.CHROMA_COLLECTION)
     bm25 = build_bm25_index(load_indexed_chunks(store))
-    return SearchIndex(store, bm25, load_unavailable_files(config.INGESTION_REPORT), indexed_standards(bm25.chunks))
+    return SearchIndex(
+        store,
+        bm25,
+        load_unavailable_files(config.INGESTION_REPORT),
+        indexed_documents(bm25.chunks),
+        indexed_numbers(bm25.chunks),
+    )
 
 
 def get_llm_provider() -> LLMProvider:
@@ -116,9 +125,22 @@ class ChatRequest(BaseModel):
 class Citation(BaseModel):
     source: str
     page: int
-    standard: str
+    standard: str  # short name of the document, e.g. "IS 14543 (2004)" or "Product manual for IS 302"
     title: str
+    doc_type: str  # standard, act, product_manual, press_release, summary or document
     preview: str
+
+
+class IndexedDocumentInfo(BaseModel):
+    """One document in the knowledge base, for GET /api/status."""
+
+    source: str
+    title: str
+    doc_type: str
+    type_label: str
+    label: str
+    standards: list[str]
+    pages: int
 
 
 class ChatResponse(BaseModel):
@@ -162,8 +184,9 @@ def to_citation(result: SearchResult) -> Citation:
     return Citation(
         source=result.source,
         page=result.page,
-        standard=standard_label(result.title, result.source),
+        standard=result_label(result),
         title=result.title,
+        doc_type=result.doc_type,
         preview=" ".join(result.text.split())[:200],
     )
 
@@ -269,7 +292,7 @@ def run_stt(audio: bytes, file: UploadFile, language: Language, mode: str, index
     return transcribe(
         audio,
         file.filename or "audio.wav",
-        indexed_is_numbers(index.titles),
+        index.numbers,
         language_code=SUPPORTED_LANGUAGES[language],
         mode=mode,
         content_type=file.content_type or "audio/wav",
@@ -300,7 +323,7 @@ def status(index: SearchIndex = Depends(get_search_index), llm: LLMProvider = De
         "translation": {"provider": "sarvam", "model": config.SARVAM_TRANSLATE_MODEL, "configured": sarvam_configured},
         "index": {
             "chunks": len(index.bm25.chunks),
-            "documents": index.titles,
+            "documents": [IndexedDocumentInfo(**vars(document)).model_dump() for document in index.documents],
             "unavailable_files": index.unavailable_files,
         },
         "supported_languages": SUPPORTED_LANGUAGES,

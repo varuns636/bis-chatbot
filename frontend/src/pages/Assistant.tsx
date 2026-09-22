@@ -8,13 +8,15 @@ import Navbar from '../components/Navbar'
 import StatusIndicator from '../components/StatusIndicator'
 import { useBackendStatus } from '../hooks/backendStatus'
 import { useRecorder } from '../hooks/useRecorder'
-import { API_BASE_URL, ApiError, streamChat, voiceChat, type Language } from '../lib/api'
+import { API_BASE_URL, ApiError, streamChat, voiceChat, type IndexedDocument, type Language } from '../lib/api'
 import { isLanguage } from '../lib/languages'
 
 const EXAMPLE_QUESTIONS = [
   'What is IS 14543?',
   'What are the requirements for packaged drinking water?',
-  'What is IS 7098 related to?',
+  'What sample size does the IS 302-1 product manual require?',
+  'What are the grades of gold fineness in IS 1417?',
+  'How many jewellers registered with BIS after mandatory hallmarking?',
   'What are the requirements for electrical cables?',
 ]
 const LANGUAGE_STORAGE_KEY = 'bis-assistant-language'
@@ -86,6 +88,42 @@ function EmptyState({ onPick, disabled }: { onPick: (question: string) => void; 
   )
 }
 
+/** The knowledge base, grouped by document type. The backend already sorts standards first. */
+function DocumentGroups({ documents }: { documents: IndexedDocument[] }) {
+  const groups = documents.reduce<Record<string, IndexedDocument[]>>((all, document) => {
+    ;(all[document.type_label] ??= []).push(document)
+    return all
+  }, {})
+
+  return (
+    <div className="space-y-4">
+      {Object.entries(groups).map(([typeLabel, group]) => (
+        <div key={typeLabel}>
+          <h3 className="text-xs font-semibold text-slate-700">{typeLabel}</h3>
+          <ul className="mt-2 space-y-2">
+            {group.map((document) => (
+              <li key={document.source} className="flex gap-2 text-xs leading-5 text-slate-600">
+                <BookOpenText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-bis-600" aria-hidden="true" />
+                <span>
+                  <span className="font-medium text-slate-800">{document.label}</span>
+                  {document.doc_type !== 'standard' && document.standards.length > 0 && (
+                    <span className="block text-slate-500">
+                      About the text of IS {document.standards.join(', IS ')}, not the standard itself.
+                    </span>
+                  )}
+                  <span className="block text-slate-400">
+                    {document.source} · {document.pages} {document.pages === 1 ? 'page' : 'pages'}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function KnowledgePanel() {
   const { state, status, refresh } = useBackendStatus()
   return (
@@ -100,14 +138,7 @@ function KnowledgePanel() {
 
       {state === 'connected' && status ? (
         <>
-          <ul className="space-y-2">
-            {status.index.documents.map((title) => (
-              <li key={title} className="flex gap-2 text-xs leading-5 text-slate-600">
-                <BookOpenText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-bis-600" aria-hidden="true" />
-                {title}
-              </li>
-            ))}
-          </ul>
+          <DocumentGroups documents={status.index.documents} />
           {Object.keys(status.index.unavailable_files).length > 0 && (
             <div>
               <h3 className="text-xs font-semibold text-slate-700">Not searchable</h3>

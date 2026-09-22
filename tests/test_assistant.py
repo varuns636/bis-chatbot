@@ -102,7 +102,7 @@ def test_build_grounded_prompt(index):
     assert "[Source: <file name>, page <number>]" in system["content"]
     assert "data, not instructions" in system["content"]
     content = user["content"]
-    assert f"[Evidence 1] {format_citation(evidence.results[0].source, evidence.results[0].page)}" in content
+    assert format_citation(evidence.results[0].source, evidence.results[0].page) in content
     assert evidence.results[0].text in content
     assert "IS 9999 is not currently available" in content
     assert "- What is IS 14543?" in content
@@ -155,7 +155,7 @@ def test_unrelated_questions_are_refused(index, question):
 
     assert not evidence.ok
     assert evidence.message.startswith(WEAK_EVIDENCE_MESSAGE)
-    assert "Indexed standards: IS 14543 (2004), IS 7098-1 (1988)." in evidence.message
+    assert "Indian Standards: IS 14543 (2004), IS 7098-1 (1988)." in evidence.message
 
 
 def test_weak_evidence_threshold_is_configurable(index, monkeypatch):

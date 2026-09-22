@@ -25,8 +25,9 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 import config
+from src.ingestion import DOC_TYPE_LABELS, DOC_TYPE_PLURALS
 from src.llm import LLMProvider
-from src.retrieval import IS_NUMBER_PATTERN, BM25Index, SearchResult, hybrid_search, tokenize
+from src.retrieval import IS_NUMBER_PATTERN, BM25Index, SearchResult, chunk_standards, hybrid_search, tokenize
 
 WEAK_EVIDENCE_MESSAGE = "I could not find strong supporting evidence in the indexed BIS documents."
 INSUFFICIENT_ANSWER = "I don't have enough information in the indexed BIS documents to answer that reliably."
@@ -44,6 +45,10 @@ QUESTION_WORDS = frozenset(
 )
 # Words that make a question refer back to an earlier one.
 FOLLOW_UP_WORDS = frozenset("it its this that these those they them their same".split())
+# Longest short name shown for a document.
+LABEL_CHARS = 60
+# Standards first, then the BIS documents about them.
+DOC_TYPE_ORDER = {"standard": 0, "act": 1, "product_manual": 2, "summary": 3, "press_release": 4, "document": 5}
 # Also accepts extra text after the page number, e.g. "[Source: a.pdf, page 6, Amendment No. 2]".
 CITATION_PATTERN = re.compile(r"\[Source:\s*([^,\]]+?)\s*,\s*page\s*(\d+)[^\]]*\]", re.IGNORECASE)
 
@@ -118,13 +123,97 @@ def unsupported_standard_numbers(answer: str, results: list[SearchResult], notes
     supported: set[str] = set()
     for text in [f"{r.title} {r.source} {r.text}" for r in results] + list(notes):
         supported |= _is_numbers(text)
+    for result in results:
+        supported |= set(result.standards)
     return [f"IS {number}" for number in sorted(_is_numbers(answer) - supported)]
 
 
-def standard_label(title: str, source: str) -> str:
-    """Short name such as "IS 14543 (2004)", from the title. Falls back to the file name."""
+# Gazette and document references that follow a title: "NO. 11 OF 2016", "[21st March, 2016.]".
+TITLE_TAIL_PATTERN = re.compile(r"\s+(NO\.\s*\d.*|\[.*\])$", re.IGNORECASE)
+
+
+def _shorten(text: str, limit: int = LABEL_CHARS) -> str:
+    """Cut text to `limit` characters on a word boundary, dropping any reference tail."""
+    while True:
+        trimmed = TITLE_TAIL_PATTERN.sub("", text).strip()
+        if trimmed == text:
+            break
+        text = trimmed
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(" ,-:;") + "..."
+
+
+def standard_label(
+    title: str, source: str, doc_type: str = "standard", standards: Iterable[str] = ()
+) -> str:
+    """Short name for a document, for citations and lists.
+
+    An Indian Standard is named by its number ("IS 14543 (2004)"). Other BIS documents are named
+    by their type and the standard they are about ("Product manual for IS 302"), or by their title
+    ("Press release: Milestones in Hallmark Scheme..."). Falls back to the file name.
+    """
     head = title.split(":")[0].strip()
-    return head if IS_NUMBER_PATTERN.match(head) else source
+    if IS_NUMBER_PATTERN.match(head):
+        return head
+    numbers = ", ".join(f"IS {number}" for number in standards)
+    type_label = DOC_TYPE_LABELS.get(doc_type, "")
+    if doc_type in ("standard", "document") or not type_label:
+        return _shorten(title) if title else source
+    if numbers:
+        return f"{type_label} for {numbers}"
+    short = _shorten(title)
+    # "Act: THE BUREAU OF INDIAN STANDARDS ACT, 2016" repeats itself; the title already says it.
+    if type_label.lower() in short.lower():
+        return short
+    return f"{type_label}: {short}"
+
+
+def result_label(result: SearchResult) -> str:
+    """The short name of the document a retrieved passage came from."""
+    return standard_label(result.title, result.source, result.doc_type, result.standards)
+
+
+@dataclass
+class IndexedDocument:
+    """One document in the knowledge base, as shown in the UI."""
+
+    source: str
+    title: str
+    doc_type: str
+    type_label: str
+    label: str
+    standards: list[str]
+    pages: int
+
+
+def indexed_documents(chunks: list[Document]) -> list[IndexedDocument]:
+    """The indexed documents, one entry per document, sorted by type and then by name.
+
+    Standards come first, then the BIS documents about them.
+    """
+    by_doc: dict[str, dict] = {}
+    for chunk in chunks:
+        meta = chunk.metadata
+        entry = by_doc.setdefault(meta["doc_id"], {"meta": meta, "pages": set()})
+        entry["pages"].add(meta["page"])
+
+    documents = []
+    for entry in by_doc.values():
+        meta, standards = entry["meta"], chunk_standards(entry["meta"])
+        doc_type = meta.get("doc_type", "document")
+        documents.append(
+            IndexedDocument(
+                source=meta["source"],
+                title=meta["title"],
+                doc_type=doc_type,
+                type_label=DOC_TYPE_LABELS.get(doc_type, "BIS document"),
+                label=standard_label(meta["title"], meta["source"], doc_type, standards),
+                standards=standards,
+                pages=len(entry["pages"]),
+            )
+        )
+    return sorted(documents, key=lambda d: (DOC_TYPE_ORDER.get(d.doc_type, len(DOC_TYPE_ORDER)), d.label))
 
 
 def indexed_standards(chunks: list[Document]) -> list[str]:
@@ -132,15 +221,15 @@ def indexed_standards(chunks: list[Document]) -> list[str]:
     return sorted({chunk.metadata["title"] for chunk in chunks})
 
 
+def indexed_numbers(chunks: list[Document]) -> set[str]:
+    """Every IS number the knowledge base covers, from any document type."""
+    return {number for chunk in chunks for number in chunk_standards(chunk.metadata)}
+
+
 def _is_numbers(text: str) -> set[str]:
     return set(IS_NUMBER_PATTERN.findall(text))
 
 
-def _indexed_numbers(chunks: list[Document]) -> set[str]:
-    numbers: set[str] = set()
-    for chunk in chunks:
-        numbers |= _is_numbers(f"{chunk.metadata['title']} {chunk.metadata['source']}")
-    return numbers
 
 
 def describe_unavailable_standard(number: str, unavailable_files: dict[str, str]) -> str:
@@ -150,6 +239,23 @@ def describe_unavailable_standard(number: str, unavailable_files: dict[str, str]
         if number in _is_numbers(name):
             return f"{message} Its file {name} is in the document folder but was not searched: {reason}."
     return message
+
+
+def describe_indirect_standard(number: str, chunks: list[Document]) -> str:
+    """Note for a standard covered only by documents *about* it, never by its own text.
+
+    IS 302-1 is an example: its own PDF is scanned, so the evidence comes from the product
+    manual. The model must not present that as the text of the standard. Returns "" when the
+    standard itself is indexed.
+    """
+    covering = [d for d in indexed_documents(chunks) if number in d.standards]
+    if not covering or any(d.doc_type == "standard" for d in covering):
+        return ""
+    names = ", ".join(f"{d.type_label.lower()} \"{_shorten(d.title)}\"" for d in covering)
+    return (
+        f"The text of IS {number} is not in the knowledge base. What is indexed about it is the "
+        f"{names}. Answer from that, and say the answer does not come from the standard itself."
+    )
 
 
 def is_follow_up(question: str) -> bool:
@@ -178,11 +284,18 @@ def keyword_overlap(question: str, results: list[SearchResult]) -> float:
     return len(terms & found) / len(terms)
 
 
+def describe_knowledge_base(chunks: list[Document]) -> str:
+    """One line per document type listing what the knowledge base holds. Empty when nothing is indexed."""
+    by_type: dict[str, list[str]] = {}
+    for document in indexed_documents(chunks):
+        by_type.setdefault(DOC_TYPE_PLURALS.get(document.doc_type, document.type_label), []).append(document.label)
+    return "\n".join(f"{label}: {', '.join(names)}." for label, names in by_type.items())
+
+
 def _refusal(headline: str, reason: str, chunks: list[Document]) -> str:
     parts = [headline, reason]
     if chunks:
-        labels = [standard_label(title, title) for title in indexed_standards(chunks)]
-        parts.append("Indexed standards: " + ", ".join(labels) + ".")
+        parts.append("The knowledge base holds:\n" + describe_knowledge_base(chunks))
     parts.append(f"Try rephrasing with a product name or an IS number. {VERIFY_WITH_BIS}")
     return "\n\n".join(part for part in parts if part)
 
@@ -202,8 +315,10 @@ def check_evidence(
     chunks = bm25_index.chunks
 
     named = _is_numbers(search_query)
-    indexed = _indexed_numbers(chunks)
+    indexed = indexed_numbers(chunks)
     evidence.notes = [describe_unavailable_standard(n, unavailable_files) for n in sorted(named - indexed)]
+    evidence.notes += [describe_indirect_standard(n, chunks) for n in sorted(named & indexed)]
+    evidence.notes = [note for note in evidence.notes if note]
     if named and not named & indexed:
         evidence.message = _refusal(" ".join(evidence.notes), "", chunks)
         evidence.notes = []  # already part of the message
@@ -254,10 +369,11 @@ def build_grounded_prompt(
     if earlier:
         parts.append("Earlier questions from the user (context only, not evidence):\n" + "\n".join(f"- {q}" for q in earlier))
     passages = [
-        f"[Evidence {number}] {format_citation(r.source, r.page)}\nDocument: {r.title}\n<<<\n{r.text}\n>>>"
+        # No passage number: a label next to the citation gets copied into the answer in its place.
+        f"{format_citation(r.source, r.page)}\nDocument: {r.title}\n<<<\n{r.text}\n>>>"
         for number, r in enumerate(evidence.results, start=1)
     ]
-    parts.append("Evidence:\n\n" + "\n\n".join(passages))
+    parts.append("Evidence passages, each under the citation to use for it:\n\n" + "\n\n".join(passages))
     if language != "english":
         parts.append(ANSWER_LANGUAGE_RULE.format(language=language.title()))
     if evidence.question != question:

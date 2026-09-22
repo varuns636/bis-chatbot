@@ -14,13 +14,14 @@ from src.assistant import (
     check_citations,
     check_evidence,
     generate_answer,
-    indexed_standards,
-    standard_label,
+    indexed_documents,
+    indexed_numbers,
+    result_label,
     unsupported_standard_numbers,
 )
 from src.llm import LLMUnavailableError, get_llm
 from src.retrieval import build_bm25_index, load_indexed_chunks, load_unavailable_files, open_vector_store
-from src.stt import STTError, indexed_is_numbers, transcribe
+from src.stt import STTError, transcribe
 
 EVIDENCE_LABELS = {
     "answer": "Retrieved evidence",
@@ -51,7 +52,7 @@ def render_extras(message: dict) -> None:
         if cited:
             st.markdown("**Sources**")
             for result in cited:
-                st.markdown(f"- {standard_label(result.title, result.source)}, page {result.page} (`{result.source}`)")
+                st.markdown(f"- {result_label(result)}, page {result.page} (`{result.source}`)")
                 st.caption(" ".join(result.text.split())[:200] + "...")
         if unknown:
             st.warning("The answer cites pages that were not in the retrieved evidence: " + ", ".join(unknown))
@@ -78,7 +79,7 @@ def voice_caption(voice: dict) -> str:
     return f"🎤 Voice question in {voice['language']}, {action} by Sarvam AI"
 
 
-def read_question(submission, titles: list[str]) -> tuple[str | None, dict | None]:
+def read_question(submission, known_numbers: set[str]) -> tuple[str | None, dict | None]:
     """Turn the chat input into question text. A voice recording is transcribed first."""
     if submission is None:
         return None, None
@@ -89,7 +90,7 @@ def read_question(submission, titles: list[str]) -> tuple[str | None, dict | Non
     try:
         with st.spinner("Transcribing your voice question..."):
             transcript = transcribe(
-                submission.audio.getvalue(), submission.audio.name or "question.wav", indexed_is_numbers(titles)
+                submission.audio.getvalue(), submission.audio.name or "question.wav", known_numbers
             )
     except STTError as exc:
         st.error(f"Voice input failed: {exc}")
@@ -105,7 +106,8 @@ st.caption(
 
 store, bm25_index = load_search_index(str(config.CHROMA_DIR), config.CHROMA_COLLECTION)
 unavailable_files = load_unavailable_files(config.INGESTION_REPORT)
-titles = indexed_standards(bm25_index.chunks)
+documents = indexed_documents(bm25_index.chunks)
+known_numbers = indexed_numbers(bm25_index.chunks)
 voice_enabled = bool(config.SARVAM_API_KEY)
 llm = get_llm()
 try:
@@ -116,8 +118,12 @@ except LLMUnavailableError as exc:
 
 with st.sidebar:
     st.subheader("Knowledge base")
-    for title in titles:
-        st.markdown(f"- {title}")
+    for type_label in dict.fromkeys(document.type_label for document in documents):
+        st.markdown(f"**{type_label}**")
+        for document in (d for d in documents if d.type_label == type_label):
+            covers = f" — covers IS {', IS '.join(document.standards)}" if document.standards else ""
+            st.markdown(f"- {document.label}{covers}")
+            st.caption(f"{document.source} · {document.pages} pages indexed")
     if unavailable_files:
         st.markdown("**Not searchable**")
         for name, reason in unavailable_files.items():
@@ -148,7 +154,7 @@ submission = st.chat_input(
     "Ask about a product, an IS number or BIS certification",
     accept_audio=voice_enabled,
 )
-question, voice = read_question(submission, titles)
+question, voice = read_question(submission, known_numbers)
 
 if question:
     previous_questions = [m["content"] for m in messages if m["role"] == "user"]

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import config
 from src import stt
 from src.api import SearchIndex, app, get_llm_provider, get_search_index, get_translation_provider
-from src.assistant import WEAK_EVIDENCE_MESSAGE, indexed_standards
+from src.assistant import WEAK_EVIDENCE_MESSAGE, indexed_documents, indexed_numbers
 from src.languages import SUPPORTED_LANGUAGES
 from src.llm import LLMUnavailableError
 from src.retrieval import build_bm25_index, build_vector_index, get_embeddings, open_vector_store
@@ -91,7 +91,9 @@ def search_index(tmp_path_factory):
     store = open_vector_store(tmp_path_factory.mktemp("chroma"), "api", get_embeddings())
     build_vector_index(CHUNKS, store)
     unavailable = {"is.302.1.2008.pdf": "no usable text (79 of 80 pages blank; likely scanned, OCR needed)"}
-    return SearchIndex(store, build_bm25_index(CHUNKS), unavailable, indexed_standards(CHUNKS))
+    return SearchIndex(
+        store, build_bm25_index(CHUNKS), unavailable, indexed_documents(CHUNKS), indexed_numbers(CHUNKS)
+    )
 
 
 @pytest.fixture
@@ -198,7 +200,7 @@ def test_chat_english_is_unchanged_and_not_translated(client, llm, translator):
     assert body["english_answer"] is None and body["translated"] is False
     assert body["citations"] == [{
         "source": "is.14543.2004.pdf", "page": 5, "standard": "IS 14543 (2004)",
-        "title": "IS 14543 (2004): Packaged Drinking Water",
+        "title": "IS 14543 (2004): Packaged Drinking Water", "doc_type": "standard",
         "preview": "5.1 Microbiological requirements. Packaged drinking water shall be free from E. coli and coliform bacteria.",
     }]
     assert translator.calls == []

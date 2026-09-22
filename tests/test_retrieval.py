@@ -3,6 +3,8 @@
 import pytest
 from langchain_core.documents import Document
 
+from src.ingestion import document_standards
+
 from src.retrieval import (
     SearchResult,
     build_bm25_index,
@@ -22,7 +24,9 @@ WATER = ("is.14543.2004.pdf", "IS 14543 (2004): Packaged Drinking Water")
 CABLE = ("is.7098.1.1988.pdf", "IS 7098-1 (1988): Crosslinked polyethylene insulated PVC sheathed cables")
 
 
-def make_chunk(doc: tuple[str, str], page: int, chunk_index: int, text: str) -> Document:
+def make_chunk(
+    doc: tuple[str, str], page: int, chunk_index: int, text: str, doc_type: str = "standard", standards: str = ""
+) -> Document:
     source, title = doc
     return Document(
         page_content=text,
@@ -34,6 +38,8 @@ def make_chunk(doc: tuple[str, str], page: int, chunk_index: int, text: str) -> 
             "page_char_count": len(text),
             "doc_id": source.split(".")[1],
             "chunk_index": chunk_index,
+            "standards": standards or ",".join(document_standards(title, source)),
+            "doc_type": doc_type,
         },
     )
 
@@ -148,7 +154,7 @@ def test_hybrid_search_merges_chunks_found_by_both_methods(store, bm25_index):
 
 def test_fuse_results_sums_ranks_for_duplicates():
     def result(doc_id: str, method: str, score: float) -> SearchResult:
-        return SearchResult("t", "s.pdf", "/s.pdf", 1, "T", doc_id, 0, score, [method],
+        return SearchResult("t", "s.pdf", "/s.pdf", 1, "T", doc_id, 0, "standard", [], score, [method],
                             vector_score=score if method == "vector" else None,
                             bm25_score=score if method == "bm25" else None)
 
