@@ -150,7 +150,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-See `frontend/README.md` for details.
+The assistant page needs a session. `/login` offers a mobile number with a one-time code, a Gmail address, or **Continue as guest**. Sign-in is a browser-side demo: no SMS is sent, Google is not contacted, the code is shown on screen, and the API is open to everyone. Guest mode has the same access as a signed-in user. See `frontend/README.md` for details.
 
 ## Search from the command line
 

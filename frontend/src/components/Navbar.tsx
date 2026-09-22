@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Link, NavLink } from 'react-router'
 import Logo from './Logo'
 import StatusIndicator from './StatusIndicator'
+import UserMenu from './UserMenu'
 
 const LINKS = [
   { to: '/', label: 'Home' },
@@ -42,6 +43,7 @@ export default function Navbar() {
 
         <div className="flex items-center gap-3">
           <StatusIndicator className="hidden sm:inline-flex" />
+          <UserMenu className="hidden md:flex" />
           <Link to="/assistant" className="btn-primary hidden md:inline-flex">
             Start Assistant
           </Link>
@@ -74,6 +76,7 @@ export default function Navbar() {
             <Link to="/assistant" onClick={() => setOpen(false)} className="btn-primary mt-2">
               Start Assistant
             </Link>
+            <UserMenu className="mt-3 self-start md:hidden" />
             <StatusIndicator className="mt-3 inline-flex self-start sm:hidden" />
           </div>
         </div>

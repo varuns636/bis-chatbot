@@ -34,7 +34,18 @@ npm run preview   # serve the build on http://localhost:5173
 ## Pages
 
 - `/` — landing page: hero, features, how it works, technology, footer with disclaimer.
-- `/assistant` — chat: English / ಕನ್ನಡ / हिन्दी answers, voice questions, verified citations, backend status.
+- `/login` — sign in with a mobile number and a one-time code, with a Gmail address, or as a guest.
+- `/assistant` — chat: English / ಕನ್ನಡ / हिन्दी answers, voice questions, verified citations, backend status. Needs a session; visitors without one are sent to `/login` and returned here afterwards.
+
+## Sign-in (demo only)
+
+Sign-in is handled entirely in the browser (`src/hooks/auth.tsx`). There is no auth backend, no password, and the API stays open to everyone.
+
+- **Phone** — the number must be a 10-digit Indian mobile number. No SMS is sent: the one-time code is generated in the page, shown on screen, and expires after 120 seconds.
+- **Gmail** — the address must end in `@gmail.com`. Google is not contacted. The name in the header is derived from the address.
+- **Guest** — one click, no details, and exactly the same access as a signed-in user.
+
+The session is stored in `localStorage` under `bis-assistant.session`, so it survives a reload and ends on **Sign out** in the header menu. It is identity for display only: do not treat it as access control. To make it real, replace `signInWithPhone` and `signInWithGoogle` in `src/hooks/auth.tsx` with backend calls and keep the rest of the context unchanged.
 
 ## API calls (`src/lib/api.ts`)
 
@@ -60,9 +71,10 @@ src/
   index.css                    Tailwind theme (BIS blue) and shared classes
   lib/api.ts                   Typed FastAPI client and error handling
   lib/languages.ts             The three supported languages
+  hooks/auth.tsx               Sign-in state kept in localStorage (phone, Gmail or guest)
   hooks/backendStatus.tsx      Connection polling shared by all pages
   hooks/useRecorder.ts         Microphone recording
-  components/                  Navbar, footer, logo, status indicator, hero illustration
+  components/                  Navbar, footer, logo, status indicator, hero illustration, user menu, route guard
   components/chat/             Message bubbles, answer formatting, citations, composer, language selector
-  pages/                       Landing, Assistant, NotFound
+  pages/                       Landing, Login, Assistant, NotFound
 ```
